@@ -1,6 +1,6 @@
 # gstack-orchestrate
 
-> **Status:** WIP. v1.5. Runs end-to-end on a synthetic repo. Not yet exercised on a real project plan.
+> **Status:** Stable, in regular use. v1.6.
 
 Orchestrates a gstack implementation plan by shredding it into parallel subtasks, dispatching each to an isolated git worktree via the Claude Code `Agent` tool, then cherry-picking the results onto your working branch wave by wave.
 
@@ -52,6 +52,7 @@ You'll be asked to approve the task decomposition before anything dispatches. No
 | Resume from checkpoint with head-match validation | ✓ |
 | Bounded fix-up retries (max 2 per wave) | ✓ |
 | Bounded `/review` cleanup loop (max 2 passes) | ✓ |
+| Telemetry + per-wave timeline events | ✓ |
 
 The skill survived three rounds of adversarial review and four execution dry-runs across v1.1 → v1.5. Real bugs the dry-runs caught:
 
@@ -62,8 +63,6 @@ The skill survived three rounds of adversarial review and four execution dry-run
 
 ## What's NOT working yet
 
-- **Never tested on a real plan.** All verification has been against synthetic scratch repos. The first real run will probably surface something.
-- **No telemetry/learnings hooks.** Sibling gstack skills (`/ship`, `/review`, `/qa`) log to `~/.gstack/analytics/` and `~/.gstack/projects/$SLUG/learnings.jsonl`. This skill doesn't yet.
 - **Worktree branches accumulate.** The Agent tool's `isolation: "worktree"` mode leaves auto-managed branches behind. The skill prunes worktree records but does NOT auto-delete branches (deleting them is unsafe — we can't reliably tell harness branches apart from user branches). Run `git branch --list` and clean manually if they pile up.
 - **Resume divergence is detected, not auto-recovered.** If you `git reset --hard` between runs, the skill correctly refuses to resume but won't try to rebuild missing commits.
 - **No `/ship` integration test.** Phase 4 calls `Skill({skill: "ship"})` but the handoff has only been validated as a code path, not a real shipping flow.
@@ -80,14 +79,19 @@ The skill survived three rounds of adversarial review and four execution dry-run
 
 ---
 
+## Where the data lives
+
+- **Skill-level analytics:** `~/.gstack/analytics/skill-usage.jsonl` — one start row + one completion row per orchestrate run, with `outcome` (success/abort/error) and `duration_s`.
+- **Per-wave timeline:** `~/.gstack/projects/<slug>/timeline.jsonl` — `wave_dispatched` (wave + task count) and `wave_completed` (duration + success/failed/fixup counts) events per wave, plus the standard `started` / `completed` skill events.
+- **Per-task results:** `~/.gstack/projects/<slug>/orchestrate/<branch>/results/*.json` — what each subagent did.
+- **Resume state with per-wave duration:** `~/.gstack/projects/<slug>/orchestrate/<branch>/state.jsonl` — head, wave, duration, counts. Older entries (pre-1.6) lack the count/duration fields; resume logic only reads `head`/`wave`/`status` so it stays compatible.
+
+Query with `gstack-analytics` (skill-usage), `gstack-timeline-read` (timeline), or `jq` directly.
+
+---
+
 ## Where to read more
 
 - Full skill definition: `~/.claude/skills/gstack-orchestrate/SKILL.md`
 - Sibling skills it composes with: `/autoplan`, `/plan-eng-review`, `/review`, `/qa`, `/ship`
 - The Agent tool's `isolation: "worktree"` mode is what makes parallel commits safe
-
----
-
-## Try it on a real plan next
-
-The skill needs a real run to find anything the dry-runs missed. Pick a small feature (4-6 tasks, ideally one wave), point the skill at its plan file, and watch what happens at the approval gate. Stop at the first thing that feels wrong and tell me what you saw.

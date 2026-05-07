@@ -1,6 +1,6 @@
 ---
 name: gstack-orchestrate
-version: 1.5.1
+version: 1.6.0
 description: |
   Master orchestration skill that takes a gstack implementation plan and ships it via
   parallel Claude Code subagents in isolated git worktrees. Sits between /autoplan
@@ -48,6 +48,78 @@ You are the **Orchestrator**. You do not write feature code, fix code, resolve c
 4. Dispatch each subtask to an `Agent` subagent with `isolation: "worktree"`
 5. Verify each wave before starting the next
 6. Hand off to gstack `/review` and `/ship` when the build is green
+
+---
+
+## TELEMETRY PREAMBLE
+
+Run this bash block before Phase 0. It bootstraps performance tracking for the entire orchestrate run. Mirrors the sibling pattern in `/ship`, `/review`, `/qa`. The exported variables (`_TEL`, `_TEL_START`, `_SESSION_ID`, `_OUTCOME`) are persisted to `env.sh` in Phase 0.6 so they survive across Bash tool calls.
+
+```bash
+_TEL=$(~/.claude/skills/gstack/bin/gstack-config get telemetry 2>/dev/null || echo "off")
+_TEL_START=$(date +%s)
+_SESSION_ID="$$-$(date +%s)"
+_OUTCOME="success"  # default — abort/error gates override before terminal epilogue
+echo "TELEMETRY: ${_TEL:-off}  SESSION: $_SESSION_ID"
+
+mkdir -p ~/.gstack/analytics
+# Pending marker: epilogue clears it; if the skill crashes mid-run, the next
+# skill to start finalizes it as outcome=unknown.
+echo '{"skill":"gstack-orchestrate","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","session_id":"'"$_SESSION_ID"'","gstack_version":"'$(cat ~/.claude/skills/gstack/VERSION 2>/dev/null | tr -d '[:space:]' || echo unknown)'"}' \
+  > ~/.gstack/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
+
+# Local analytics start row (gated on telemetry tier)
+if [ "$_TEL" != "off" ]; then
+  echo '{"skill":"gstack-orchestrate","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","repo":"'$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo unknown)'"}' \
+    >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
+fi
+
+# Finalize stale .pending markers from prior crashed sessions (sibling-skill pattern)
+for _PF in $(find ~/.gstack/analytics -maxdepth 1 -name '.pending-*' 2>/dev/null); do
+  if [ -f "$_PF" ]; then
+    _PFSID="${_PF##*/.pending-}"
+    [ "$_PFSID" = "$_SESSION_ID" ] && continue
+    if [ "$_TEL" != "off" ] && [ -x ~/.claude/skills/gstack/bin/gstack-telemetry-log ]; then
+      ~/.claude/skills/gstack/bin/gstack-telemetry-log --event-type skill_run --skill _pending_finalize --outcome unknown --session-id "$_PFSID" 2>/dev/null || true
+    fi
+    rm -f "$_PF" 2>/dev/null || true
+  fi
+done
+
+# Timeline: skill started (local-only, runs regardless of telemetry tier).
+# Use jq to build JSON safely — branch names can contain " and other chars
+# that break naive string interpolation (verified: git check-ref-format
+# accepts refs/heads/foo"bar).
+_BRANCH_FOR_TL=$(git branch --show-current 2>/dev/null || echo unknown)
+_TL_PAYLOAD=$(jq -nc --arg branch "$_BRANCH_FOR_TL" --arg sid "$_SESSION_ID" \
+  '{skill:"gstack-orchestrate",event:"started",branch:$branch,session:$sid}')
+~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null &
+
+# Telemetry recovery state: persist the four telemetry vars to a stable path
+# BEFORE Phase 0. If Phase 0 fails before 0.6 creates env.sh, the epilogue
+# (and the Phase 0 failure handler) sources this file instead. Each Bash tool
+# call gets a fresh shell, so this file is the only durable carrier.
+mkdir -p ~/.gstack/analytics
+cat > ~/.gstack/analytics/.tel-"$_SESSION_ID".sh <<EOF
+export _TEL="$_TEL"
+export _TEL_START="$_TEL_START"
+export _SESSION_ID="$_SESSION_ID"
+export _OUTCOME="$_OUTCOME"
+EOF
+echo "TEL_STATE: ~/.gstack/analytics/.tel-$_SESSION_ID.sh"
+```
+
+**Phase 0 failure handler.** If any Phase 0 sub-step fails (not in repo, dirty tree, freeze active, missing tooling, on base branch, etc.), do this before stopping the skill. Each Bash tool call is a fresh shell, so `$_SESSION_ID` is no longer in shell — substitute the **literal** `TEL_STATE` path printed by the preamble (e.g. `~/.gstack/analytics/.tel-72336-1778171718.sh`) into both the source line AND the sed line:
+
+```bash
+# REPLACE <TEL_STATE_PATH> with the absolute path the preamble printed.
+source <TEL_STATE_PATH>
+sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="error"/' <TEL_STATE_PATH> && rm -f <TEL_STATE_PATH>.bak
+# Then run the Phase 4.4.5 telemetry epilogue (which sources env.sh OR the
+# tel-state file via literal substitution), and stop.
+```
+
+The epilogue (4.4.5) handles env.sh absence by sourcing the same literal `TEL_STATE_PATH`. See "telemetry epilogue (resilient sourcing)" in 4.4.5.
 
 ---
 
@@ -169,6 +241,10 @@ export STACK="$STACK"
 export TEST_CMD="$TEST_CMD"
 export LINT_CMD="$LINT_CMD"
 export _COMMIT_FORMAT="$_COMMIT_FORMAT"
+export _TEL="$_TEL"
+export _TEL_START="$_TEL_START"
+export _SESSION_ID="$_SESSION_ID"
+export _OUTCOME="$_OUTCOME"
 EOF
 echo "ENV_FILE: $_STATE_DIR/env.sh"
 ```
@@ -217,13 +293,26 @@ Then ask via `AskUserQuestion`:
 
 - A) Resume from wave N+1 (only safe if `RESUME_OK` or `RESUME_OK_AHEAD`)
 - B) Start fresh (`rm "$_STATE_DIR/state.jsonl" "$_STATE_DIR/TASKS.md" "$_STATE_DIR/results"/*.json` and re-shred)
-- C) Abort (leave state intact for manual fix)
+- C) Abort. Set `_OUTCOME=abort` in env.sh (`sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="abort"/' "$_STATE_DIR/env.sh" && rm -f "$_STATE_DIR/env.sh.bak"`), run the Phase 4.4.5 epilogue, leave state intact for manual fix.
 
 If `RESUME_DIVERGED` is detected, do NOT offer A. Force the user to pick B or C.
 
 If A: skip 1.2-1.4 entirely, jump to Phase 2 starting at wave `LAST_WAVE+1`.
 
-**Abort semantics (option C, anywhere in the skill):** leave `$_STATE_DIR` intact (state.jsonl, TASKS.md, results). Print: `"Aborted. State preserved at <_STATE_DIR>. Re-run /gstack-orchestrate to resume, or 'rm -rf <_STATE_DIR>' to discard."`
+**Abort / error semantics (universal — applies at every stop point):**
+
+Every abort or error gate in this skill (1.1-C, 1.4-D, 3.2-C, 3.4-B, 4.1-B) MUST do these three things before stopping:
+
+1. **Set `_OUTCOME` in env.sh** so the telemetry epilogue records the right outcome. Use `"abort"` for user-driven gates (1.1-C, 1.4-D, 3.2-C) and `"error"` for unrecoverable failures (3.4-B, 4.1-B):
+   ```bash
+   source "<env.sh path>"
+   # Substitute "abort" or "error":
+   sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="abort"/' "$_STATE_DIR/env.sh" && rm -f "$_STATE_DIR/env.sh.bak"
+   ```
+2. **Run the Phase 4.4.5 telemetry epilogue.** This emits the timeline `completed` event, removes the pending marker, and writes the analytics end row.
+3. **Leave `$_STATE_DIR` intact** (state.jsonl, TASKS.md, results). Print: `"Aborted. State preserved at <_STATE_DIR>. Re-run /gstack-orchestrate to resume, or 'rm -rf <_STATE_DIR>' to discard."`
+
+The success path (Phase 4.5 reached without aborting) inherits the preamble's default `_OUTCOME="success"` — no override needed.
 
 ### 1.2 Plan auto-discovery
 
@@ -326,7 +415,7 @@ Then ask via `AskUserQuestion`:
 - A) Approve and dispatch
 - B) Refine (user describes changes; you regenerate TASKS.md and re-show)
 - C) Re-shred from scratch with different constraints
-- D) Abort
+- D) Abort. Set `_OUTCOME=abort` in env.sh (`sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="abort"/' "$_STATE_DIR/env.sh" && rm -f "$_STATE_DIR/env.sh.bak"`), run the Phase 4.4.5 epilogue, then stop.
 
 Only proceed on A.
 
@@ -350,7 +439,32 @@ else
   INTEGRATION_POINT="$_BASE_SHA"
 fi
 echo "INTEGRATION_POINT: $INTEGRATION_POINT"
+
+# Telemetry: stamp wave start time so Phase 3.5 can compute duration_s.
+# Substitute the literal wave number for $_WAVE_NUM (e.g. 1, 2, 3...).
+echo "$(date +%s)" > "$_STATE_DIR/wave-$_WAVE_NUM.start"
+# Also write the wave's task count NOW (orchestrator knows it from TASKS.md)
+# so Phase 2.1.5's wave_dispatched event has accurate data. Phase 3.1's
+# aggregate loop will overwrite this with the same value (idempotent).
+# Substitute the literal task count for $_WAVE_TASK_COUNT.
+echo "$_WAVE_TASK_COUNT" > "$_STATE_DIR/wave-$_WAVE_NUM.tasks"
 ```
+
+### 2.1.5 Emit wave_dispatched event (telemetry)
+
+After determining the integration point, before dispatching subagents, emit a timeline event. Substitute literal values for `$_WAVE_NUM` (this wave's number) and `$_WAVE_TASK_COUNT` (count of tasks in this wave from TASKS.md).
+
+```bash
+source "<env.sh path>"
+_WAVE_TASK_COUNT=$(cat "$_STATE_DIR/wave-$_WAVE_NUM.tasks" 2>/dev/null || echo 0)
+_TL_PAYLOAD=$(jq -nc \
+  --arg branch "$_BRANCH" --arg sid "$_SESSION_ID" \
+  --argjson wave "$_WAVE_NUM" --argjson tasks "$_WAVE_TASK_COUNT" \
+  '{skill:"gstack-orchestrate",event:"wave_dispatched",branch:$branch,wave:$wave,tasks:$tasks,session:$sid}')
+~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null &
+```
+
+This is best-effort — failures are silenced with `|| true` semantics via the logger itself, and the `&` ensures it cannot block dispatch. JSON is constructed via `jq` so branch names containing `"` (rare but git-legal) don't produce malformed payloads.
 
 ### 2.2 Dispatch all subagents in a single message
 
@@ -500,10 +614,19 @@ After every wave returns, before the next:
 For each task in the wave, read `$_STATE_DIR/results/$TASK_ID.json` defensively:
 
 ```bash
+# Initialize wave counters (telemetry — Phase 3.5 emits these)
+_WAVE_TASK_COUNT=0
+_WAVE_SUCCESS=0
+_WAVE_FAILED=0
+_WAVE_FIXUPS=0
+
 for TASK in $(...task ids in wave...); do
+  _WAVE_TASK_COUNT=$(( _WAVE_TASK_COUNT + 1 ))
   RESULT="$_STATE_DIR/results/$TASK.json"
   if [ ! -f "$RESULT" ]; then
-    echo "$TASK: MISSING_RESULT (treating as failed)"; continue
+    echo "$TASK: MISSING_RESULT (treating as failed)"
+    _WAVE_FAILED=$(( _WAVE_FAILED + 1 ))
+    continue
   fi
   STATUS=$(jq -r '.status // "MALFORMED"' "$RESULT" 2>/dev/null || echo "MALFORMED")
   TESTS=$(jq -r '.tests_passing // false' "$RESULT" 2>/dev/null || echo "false")
@@ -511,7 +634,21 @@ for TASK in $(...task ids in wave...); do
   REACHABLE="no"
   [ -n "$COMMIT" ] && git cat-file -e "$COMMIT" 2>/dev/null && REACHABLE="yes"
   echo "$TASK: status=$STATUS tests=$TESTS commit=${COMMIT:-none} reachable=$REACHABLE"
+  # Tally success/failed for telemetry
+  if [ "$STATUS" = "success" ] && [ "$TESTS" = "true" ] && [ "$REACHABLE" = "yes" ]; then
+    _WAVE_SUCCESS=$(( _WAVE_SUCCESS + 1 ))
+  else
+    _WAVE_FAILED=$(( _WAVE_FAILED + 1 ))
+  fi
 done
+
+# Persist wave counts so Phase 3.5 (fresh shell) can emit accurate telemetry.
+# Each Bash tool call gets a new shell; counts must survive via the state dir.
+echo "$_WAVE_TASK_COUNT" > "$_STATE_DIR/wave-$_WAVE_NUM.tasks"
+echo "$_WAVE_SUCCESS"    > "$_STATE_DIR/wave-$_WAVE_NUM.success"
+echo "$_WAVE_FAILED"     > "$_STATE_DIR/wave-$_WAVE_NUM.failed"
+# Fix-ups are bumped by Phase 3.4 (suite-failure fix-up subagent dispatch).
+[ -f "$_STATE_DIR/wave-$_WAVE_NUM.fixups" ] || echo "0" > "$_STATE_DIR/wave-$_WAVE_NUM.fixups"
 ```
 
 A task counts as `success` ONLY when ALL hold:
@@ -530,7 +667,7 @@ If any task is not `success`: stop. Use `AskUserQuestion`:
 
 - A) Dispatch a fix-up subagent (`Agent` with `isolation: "worktree"`) for that task with the blocker as scope
 - B) Re-shred the remaining tasks (regenerate TASKS.md from this wave forward)
-- C) Abort
+- C) Abort. Set `_OUTCOME=abort` in env.sh (`sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="abort"/' "$_STATE_DIR/env.sh" && rm -f "$_STATE_DIR/env.sh.bak"`), run the Phase 4.4.5 epilogue, then stop.
 
 The orchestrator does NOT fix the failure itself.
 
@@ -556,7 +693,15 @@ source "<env.sh path>"
 $TEST_CMD && $LINT_CMD
 ```
 
-If it fails: dispatch one fix-up subagent (`Agent` with `isolation: "worktree"`). The subagent commits in its own worktree and writes a result JSON to `$_STATE_DIR/results/wave-N-fixup.json`. After it returns:
+If it fails: dispatch one fix-up subagent (`Agent` with `isolation: "worktree"`). Bump the fix-up counter for telemetry before dispatching:
+
+```bash
+source "<env.sh path>"
+_F=$(cat "$_STATE_DIR/wave-$_WAVE_NUM.fixups" 2>/dev/null || echo 0)
+echo $(( _F + 1 )) > "$_STATE_DIR/wave-$_WAVE_NUM.fixups"
+```
+
+The subagent commits in its own worktree and writes a result JSON to `$_STATE_DIR/results/wave-N-fixup.json`. After it returns:
 
 ```bash
 COMMIT=$(jq -r '.commit // empty' "$_STATE_DIR/results/wave-N-fixup.json")
@@ -564,16 +709,55 @@ COMMIT=$(jq -r '.commit // empty' "$_STATE_DIR/results/wave-N-fixup.json")
 $TEST_CMD && $LINT_CMD
 ```
 
-If it still fails after the fix-up cherry-pick, ask the user via `AskUserQuestion`: A) dispatch another fix-up (max 2 retries per wave), B) abort. Do not loop indefinitely.
+If it still fails after the fix-up cherry-pick, ask the user via `AskUserQuestion`: A) dispatch another fix-up (max 2 retries per wave), B) abort. Do not loop indefinitely. On B (this is unrecoverable, not user-driven), set `_OUTCOME=error` in env.sh (`sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="error"/' "$_STATE_DIR/env.sh" && rm -f "$_STATE_DIR/env.sh.bak"`), run the Phase 4.4.5 epilogue, then stop.
 
-### 3.5 Checkpoint
+### 3.5 Checkpoint + emit wave_completed (telemetry)
+
+Before writing the checkpoint, compute wave duration and aggregate counts. The aggregate counts (`_WAVE_SUCCESS`, `_WAVE_FAILED`, `_WAVE_FIXUPS`) come from the orchestrator's bookkeeping during 3.1-3.4 — surface them as variables before reaching 3.5. Substitute the literal wave number for `$_WAVE_NUM`.
 
 ```bash
-jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg wave "N" --arg head "$(git rev-parse HEAD)" \
-  '{ts:$ts,wave:$wave,head:$head,status:"completed"}' >> "$_STATE_DIR/state.jsonl"
+source "<env.sh path>"
+_WAVE_START=$(cat "$_STATE_DIR/wave-$_WAVE_NUM.start" 2>/dev/null || echo "$(date +%s)")
+_WAVE_END=$(date +%s)
+_WAVE_DUR=$(( _WAVE_END - _WAVE_START ))
+
+# Read counts persisted by Phase 3.1's aggregate loop and Phase 3.4's fix-up bumper.
+# Defaults are defensive — Phase 3.1 always writes them, but a malformed earlier
+# step shouldn't break the checkpoint write below.
+_WAVE_TASK_COUNT=$(cat "$_STATE_DIR/wave-$_WAVE_NUM.tasks"   2>/dev/null || echo 0)
+_WAVE_SUCCESS=$(cat    "$_STATE_DIR/wave-$_WAVE_NUM.success" 2>/dev/null || echo 0)
+_WAVE_FAILED=$(cat     "$_STATE_DIR/wave-$_WAVE_NUM.failed"  2>/dev/null || echo 0)
+_WAVE_FIXUPS=$(cat     "$_STATE_DIR/wave-$_WAVE_NUM.fixups"  2>/dev/null || echo 0)
+
+# Write checkpoint to state.jsonl. If this fails (disk full, perms), do NOT
+# emit the wave_completed timeline event — that would be a silent lie.
+if jq -nc \
+  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg wave "$_WAVE_NUM" \
+  --arg head "$(git rev-parse HEAD)" \
+  --argjson duration "$_WAVE_DUR" \
+  --argjson tasks "$_WAVE_TASK_COUNT" \
+  --argjson success "$_WAVE_SUCCESS" \
+  --argjson failed "$_WAVE_FAILED" \
+  --argjson fixups "$_WAVE_FIXUPS" \
+  '{ts:$ts,wave:$wave,head:$head,status:"completed",duration_s:$duration,task_count:$tasks,success:$success,failed:$failed,fixups:$fixups}' \
+  >> "$_STATE_DIR/state.jsonl" 2>/dev/null; then
+  # Checkpoint persisted — emit the timeline event for the dashboard.
+  # jq-built JSON for safety against `"` in branch names (git-legal, rare).
+  _TL_PAYLOAD=$(jq -nc \
+    --arg branch "$_BRANCH" --arg sid "$_SESSION_ID" \
+    --argjson wave "$_WAVE_NUM" --argjson dur "$_WAVE_DUR" \
+    --argjson success "$_WAVE_SUCCESS" --argjson failed "$_WAVE_FAILED" --argjson fixups "$_WAVE_FIXUPS" \
+    '{skill:"gstack-orchestrate",event:"wave_completed",branch:$branch,wave:$wave,duration_s:$dur,success:$success,failed:$failed,fixups:$fixups,session:$sid}')
+  ~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null &
+else
+  # Checkpoint failed. Tell the user — resume will be broken until disk/perms
+  # are sorted. Do NOT emit a misleading wave_completed event.
+  echo "ERROR: state.jsonl write failed for wave $_WAVE_NUM. Resume will not work until fixed. Check disk/permissions on $_STATE_DIR." >&2
+fi
 ```
 
-Phase 1.1's resume logic reads this on next invocation.
+The state.jsonl additions (`duration_s`, `task_count`, `success`, `failed`, `fixups`) are additive. Phase 1.1's resume logic only reads `head`, `wave`, and `status`, so older entries from pre-1.6 runs remain compatible.
 
 ---
 
@@ -589,7 +773,7 @@ If `/review` flags issues:
 1. Dispatch one cleanup subagent (`Agent` with `isolation: "worktree"`) with the review feedback as scope.
 2. After it returns, cherry-pick its commit (read from `$_STATE_DIR/results/cleanup-1.json`) onto `$_BRANCH`.
 3. Re-invoke `Skill({skill: "review"})`.
-4. If issues remain, repeat once more (cleanup-2). After 2 cleanup passes, do NOT loop further. Use `AskUserQuestion`: A) ship anyway with known issues, B) abort (preserve state).
+4. If issues remain, repeat once more (cleanup-2). After 2 cleanup passes, do NOT loop further. Use `AskUserQuestion`: A) ship anyway with known issues, B) abort (preserve state). On B, set `_OUTCOME=error` in env.sh (`sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="error"/' "$_STATE_DIR/env.sh" && rm -f "$_STATE_DIR/env.sh.bak"`), run the Phase 4.4.5 epilogue, then stop. (On A, treat as success — preamble's `_OUTCOME=success` default carries through.)
 
 ### 4.2 QA / suite
 
@@ -621,6 +805,46 @@ Tests added: <count>
 Review status: clean | <N issues addressed after K cleanup passes>
 Deferred items: <list, from notes>
 State: <_STATE_DIR>
+```
+
+### 4.4.5 Telemetry epilogue (run before handoff)
+
+Run before any abort/error path stops the skill AND before the handoff in 4.5. The `_OUTCOME` variable was set to `success` in the preamble; abort and error gates override it (see "Abort / error semantics"). The epilogue mirrors the sibling pattern in `/ship`, `/review`, `/qa`.
+
+**Resilient sourcing.** Source env.sh if Phase 0.6 ran; otherwise source the tel-state file written at the end of the preamble. Fresh-shell rules mean shell vars are gone — substitute literal paths from preamble output.
+
+```bash
+# Substitute the literal env.sh path printed by Phase 0.6 (if Phase 0.6 ran)
+# OR the literal TEL_STATE path printed by the preamble (if Phase 0 failed
+# before 0.6). Caller chooses which based on where the epilogue is invoked
+# from. NO glob fallback — picking the wrong session's file is worse than
+# emitting a no-op.
+source <ENV_FILE_PATH-or-TEL_STATE_PATH>
+
+_TEL_END=$(date +%s)
+_TEL_DUR=$(( _TEL_END - ${_TEL_START:-$_TEL_END} ))
+rm -f ~/.gstack/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
+
+# Timeline: skill completed (local-only). jq-built for safe JSON.
+_TL_BR=$(git branch --show-current 2>/dev/null || echo unknown)
+_TL_PAYLOAD=$(jq -nc --arg branch "$_TL_BR" --arg sid "$_SESSION_ID" --arg outcome "$_OUTCOME" --argjson dur "$_TEL_DUR" \
+  '{skill:"gstack-orchestrate",event:"completed",branch:$branch,outcome:$outcome,duration_s:$dur,session:$sid}')
+~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null || true
+
+# Local analytics end row (gated)
+if [ "$_TEL" != "off" ]; then
+  echo '{"skill":"gstack-orchestrate","duration_s":"'"$_TEL_DUR"'","outcome":"'"$_OUTCOME"'","browse":"false","session":"'"$_SESSION_ID"'","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
+fi
+
+# Remote telemetry (opt-in, requires binary)
+if [ "$_TEL" != "off" ] && [ -x ~/.claude/skills/gstack/bin/gstack-telemetry-log ]; then
+  ~/.claude/skills/gstack/bin/gstack-telemetry-log \
+    --skill "gstack-orchestrate" --duration "$_TEL_DUR" --outcome "$_OUTCOME" \
+    --used-browse "false" --session-id "$_SESSION_ID" 2>/dev/null &
+fi
+
+# Clean up the preamble's tel-state file. Don't fail the epilogue if it's missing.
+[ -n "${_SESSION_ID:-}" ] && rm -f ~/.gstack/analytics/.tel-"$_SESSION_ID".sh 2>/dev/null || true
 ```
 
 ### 4.5 Handoff
