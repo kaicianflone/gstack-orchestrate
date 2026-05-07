@@ -111,8 +111,9 @@ The epilogue fires from one of these terminal states:
 | Phase reached | OUTCOME |
 |---|---|
 | Phase 4 cleared, handoff offered | `success` |
-| User picked Abort at any AskUserQuestion gate (1.1-C, 1.4-D, 3.2-C, 3.4-B, 4.1-B) | `abort` |
-| Fix-up retries exhausted (3.4 second failure with B, or 4.1 after 2 cleanup passes with B) | `error` |
+| User picked Abort at a user-driven gate (1.1-C, 1.4-D, 3.2-C) | `abort` |
+| Fix-up retries exhausted (3.4-B after a second failure, or 4.1-B after 2 cleanup passes) | `error` |
+| Phase 0 pre-flight failure (no repo, on base branch, dirty tree, freeze active, missing tooling) | `error` |
 
 Implementation: a single shell variable `_OUTCOME=success` is initialized at preamble entry. Each abort/error gate sets it before triggering the epilogue. The epilogue reads `$_OUTCOME` and passes it to both `gstack-timeline-log` and `gstack-telemetry-log`.
 
