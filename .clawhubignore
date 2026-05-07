@@ -1,0 +1,3 @@
+# Exclude dev/planning artifacts from the ClawHub bundle.
+# The spec + implementation plan are useful internally but bloat the runtime install.
+docs/

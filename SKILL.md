@@ -14,6 +14,11 @@ description: |
   wants to execute it without manually dispatching subagents.
   Voice triggers (speech-to-text aliases): "gee stack orchestrate", "g stack orchestrate",
   "orchestrate the plan", "ship the plan in parallel", "execute the plan".
+homepage: https://github.com/kaicianflone/gstack-orchestrate
+repository: https://github.com/kaicianflone/gstack-orchestrate
+author: kaicianflone
+license: MIT
+user-invocable: true
 allowed-tools:
   - Bash
   - Read
