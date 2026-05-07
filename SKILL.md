@@ -86,9 +86,14 @@ for _PF in $(find ~/.gstack/analytics -maxdepth 1 -name '.pending-*' 2>/dev/null
   fi
 done
 
-# Timeline: skill started (local-only, runs regardless of telemetry tier)
+# Timeline: skill started (local-only, runs regardless of telemetry tier).
+# Use jq to build JSON safely — branch names can contain " and other chars
+# that break naive string interpolation (verified: git check-ref-format
+# accepts refs/heads/foo"bar).
 _BRANCH_FOR_TL=$(git branch --show-current 2>/dev/null || echo unknown)
-~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"gstack-orchestrate","event":"started","branch":"'"$_BRANCH_FOR_TL"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
+_TL_PAYLOAD=$(jq -nc --arg branch "$_BRANCH_FOR_TL" --arg sid "$_SESSION_ID" \
+  '{skill:"gstack-orchestrate",event:"started",branch:$branch,session:$sid}')
+~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null &
 
 # Telemetry recovery state: persist the four telemetry vars to a stable path
 # BEFORE Phase 0. If Phase 0 fails before 0.6 creates env.sh, the epilogue
@@ -104,15 +109,17 @@ EOF
 echo "TEL_STATE: ~/.gstack/analytics/.tel-$_SESSION_ID.sh"
 ```
 
-**Phase 0 failure handler.** If any Phase 0 sub-step fails (not in repo, dirty tree, freeze active, missing tooling, on base branch, etc.), do this before stopping the skill:
+**Phase 0 failure handler.** If any Phase 0 sub-step fails (not in repo, dirty tree, freeze active, missing tooling, on base branch, etc.), do this before stopping the skill. Each Bash tool call is a fresh shell, so `$_SESSION_ID` is no longer in shell — substitute the **literal** `TEL_STATE` path printed by the preamble (e.g. `~/.gstack/analytics/.tel-72336-1778171718.sh`) into both the source line AND the sed line:
 
 ```bash
-source ~/.gstack/analytics/.tel-"$_SESSION_ID".sh 2>/dev/null
-sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="error"/' ~/.gstack/analytics/.tel-"$_SESSION_ID".sh && rm -f ~/.gstack/analytics/.tel-"$_SESSION_ID".sh.bak
-# Then run the Phase 4.4.5 telemetry epilogue (which falls back to this file when env.sh is absent), and stop.
+# REPLACE <TEL_STATE_PATH> with the absolute path the preamble printed.
+source <TEL_STATE_PATH>
+sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="error"/' <TEL_STATE_PATH> && rm -f <TEL_STATE_PATH>.bak
+# Then run the Phase 4.4.5 telemetry epilogue (which sources env.sh OR the
+# tel-state file via literal substitution), and stop.
 ```
 
-The epilogue (Phase 4.4.5) and the abort gates' epilogue handle env.sh absence gracefully — see "telemetry epilogue (resilient sourcing)" in 4.4.5.
+The epilogue (4.4.5) handles env.sh absence by sourcing the same literal `TEL_STATE_PATH`. See "telemetry epilogue (resilient sourcing)" in 4.4.5.
 
 ---
 
@@ -444,10 +451,15 @@ After determining the integration point, before dispatching subagents, emit a ti
 
 ```bash
 source "<env.sh path>"
-~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"gstack-orchestrate","event":"wave_dispatched","branch":"'"$_BRANCH"'","wave":"'"$_WAVE_NUM"'","tasks":"'"$_WAVE_TASK_COUNT"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
+_WAVE_TASK_COUNT=$(cat "$_STATE_DIR/wave-$_WAVE_NUM.tasks" 2>/dev/null || echo 0)
+_TL_PAYLOAD=$(jq -nc \
+  --arg branch "$_BRANCH" --arg sid "$_SESSION_ID" \
+  --argjson wave "$_WAVE_NUM" --argjson tasks "$_WAVE_TASK_COUNT" \
+  '{skill:"gstack-orchestrate",event:"wave_dispatched",branch:$branch,wave:$wave,tasks:$tasks,session:$sid}')
+~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null &
 ```
 
-This is best-effort — failures are silenced with `|| true` semantics via the logger itself, and the `&` ensures it cannot block dispatch.
+This is best-effort — failures are silenced with `|| true` semantics via the logger itself, and the `&` ensures it cannot block dispatch. JSON is constructed via `jq` so branch names containing `"` (rare but git-legal) don't produce malformed payloads.
 
 ### 2.2 Dispatch all subagents in a single message
 
@@ -726,7 +738,13 @@ if jq -nc \
   '{ts:$ts,wave:$wave,head:$head,status:"completed",duration_s:$duration,task_count:$tasks,success:$success,failed:$failed,fixups:$fixups}' \
   >> "$_STATE_DIR/state.jsonl" 2>/dev/null; then
   # Checkpoint persisted — emit the timeline event for the dashboard.
-  ~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"gstack-orchestrate","event":"wave_completed","branch":"'"$_BRANCH"'","wave":"'"$_WAVE_NUM"'","duration_s":"'"$_WAVE_DUR"'","success":"'"$_WAVE_SUCCESS"'","failed":"'"$_WAVE_FAILED"'","fixups":"'"$_WAVE_FIXUPS"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
+  # jq-built JSON for safety against `"` in branch names (git-legal, rare).
+  _TL_PAYLOAD=$(jq -nc \
+    --arg branch "$_BRANCH" --arg sid "$_SESSION_ID" \
+    --argjson wave "$_WAVE_NUM" --argjson dur "$_WAVE_DUR" \
+    --argjson success "$_WAVE_SUCCESS" --argjson failed "$_WAVE_FAILED" --argjson fixups "$_WAVE_FIXUPS" \
+    '{skill:"gstack-orchestrate",event:"wave_completed",branch:$branch,wave:$wave,duration_s:$dur,success:$success,failed:$failed,fixups:$fixups,session:$sid}')
+  ~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null &
 else
   # Checkpoint failed. Tell the user — resume will be broken until disk/perms
   # are sorted. Do NOT emit a misleading wave_completed event.
@@ -788,28 +806,25 @@ State: <_STATE_DIR>
 
 Run before any abort/error path stops the skill AND before the handoff in 4.5. The `_OUTCOME` variable was set to `success` in the preamble; abort and error gates override it (see "Abort / error semantics"). The epilogue mirrors the sibling pattern in `/ship`, `/review`, `/qa`.
 
-**Resilient sourcing.** Source env.sh if it exists; otherwise fall back to the tel-state file written at the end of the preamble. This makes the epilogue safe to call from a Phase 0 failure handler (where env.sh may never have been created).
+**Resilient sourcing.** Source env.sh if Phase 0.6 ran; otherwise source the tel-state file written at the end of the preamble. Fresh-shell rules mean shell vars are gone — substitute literal paths from preamble output.
 
 ```bash
-# Try env.sh first; fall back to the preamble's tel-state file.
-if [ -n "${_STATE_DIR:-}" ] && [ -f "$_STATE_DIR/env.sh" ]; then
-  source "$_STATE_DIR/env.sh"
-elif [ -n "${_SESSION_ID:-}" ] && [ -f ~/.gstack/analytics/.tel-"$_SESSION_ID".sh ]; then
-  source ~/.gstack/analytics/.tel-"$_SESSION_ID".sh
-else
-  # Last-ditch: glob for any tel-state file we wrote this run. If we still
-  # can't find session vars, the epilogue is a best-effort no-op.
-  for _F in ~/.gstack/analytics/.tel-*.sh; do
-    [ -f "$_F" ] && source "$_F" && break
-  done
-fi
+# Substitute the literal env.sh path printed by Phase 0.6 (if Phase 0.6 ran)
+# OR the literal TEL_STATE path printed by the preamble (if Phase 0 failed
+# before 0.6). Caller chooses which based on where the epilogue is invoked
+# from. NO glob fallback — picking the wrong session's file is worse than
+# emitting a no-op.
+source <ENV_FILE_PATH-or-TEL_STATE_PATH>
 
 _TEL_END=$(date +%s)
 _TEL_DUR=$(( _TEL_END - ${_TEL_START:-$_TEL_END} ))
 rm -f ~/.gstack/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
 
-# Timeline: skill completed (local-only)
-~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"gstack-orchestrate","event":"completed","branch":"'$(git branch --show-current 2>/dev/null || echo unknown)'","outcome":"'"$_OUTCOME"'","duration_s":"'"$_TEL_DUR"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null || true
+# Timeline: skill completed (local-only). jq-built for safe JSON.
+_TL_BR=$(git branch --show-current 2>/dev/null || echo unknown)
+_TL_PAYLOAD=$(jq -nc --arg branch "$_TL_BR" --arg sid "$_SESSION_ID" --arg outcome "$_OUTCOME" --argjson dur "$_TEL_DUR" \
+  '{skill:"gstack-orchestrate",event:"completed",branch:$branch,outcome:$outcome,duration_s:$dur,session:$sid}')
+~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null || true
 
 # Local analytics end row (gated)
 if [ "$_TEL" != "off" ]; then
