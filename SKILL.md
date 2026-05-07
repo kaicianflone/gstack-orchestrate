@@ -443,6 +443,11 @@ echo "INTEGRATION_POINT: $INTEGRATION_POINT"
 # Telemetry: stamp wave start time so Phase 3.5 can compute duration_s.
 # Substitute the literal wave number for $_WAVE_NUM (e.g. 1, 2, 3...).
 echo "$(date +%s)" > "$_STATE_DIR/wave-$_WAVE_NUM.start"
+# Also write the wave's task count NOW (orchestrator knows it from TASKS.md)
+# so Phase 2.1.5's wave_dispatched event has accurate data. Phase 3.1's
+# aggregate loop will overwrite this with the same value (idempotent).
+# Substitute the literal task count for $_WAVE_TASK_COUNT.
+echo "$_WAVE_TASK_COUNT" > "$_STATE_DIR/wave-$_WAVE_NUM.tasks"
 ```
 
 ### 2.1.5 Emit wave_dispatched event (telemetry)
