@@ -1,5 +1,5 @@
 ---
-name: gstack-orchestrate
+name: parallel-orchestrate
 version: 1.6.0
 description: |
   Master orchestration skill that takes a gstack implementation plan and ships it via
@@ -7,15 +7,15 @@ description: |
   (or /plan-eng-review) and /review + /ship. Shreds plans into parallelizable subtasks,
   dispatches them wave-by-wave with worktree isolation, verifies each wave, and hands
   off to /review and /ship.
-  Use when asked to "orchestrate this plan", "ship this plan", "gstack-orchestrate",
-  "/gstack-orchestrate", "execute this plan in parallel", "parallelize this plan",
+  Use when asked to "orchestrate this plan", "ship this plan", "parallel-orchestrate",
+  "/parallel-orchestrate", "execute this plan in parallel", "parallelize this plan",
   "run plan in waves", "shred and ship", or "dispatch subagents for this plan".
   Proactively suggest when the user has a finished plan file (e.g. plans/*.md) and
   wants to execute it without manually dispatching subagents.
   Voice triggers (speech-to-text aliases): "gee stack orchestrate", "g stack orchestrate",
   "orchestrate the plan", "ship the plan in parallel", "execute the plan".
-homepage: https://github.com/kaicianflone/gstack-orchestrate
-repository: https://github.com/kaicianflone/gstack-orchestrate
+homepage: https://github.com/kaicianflone/parallel-orchestrate
+repository: https://github.com/kaicianflone/parallel-orchestrate
 author: kaicianflone
 license: MIT
 user-invocable: true
@@ -32,7 +32,7 @@ allowed-tools:
   - Skill
 ---
 
-# /gstack-orchestrate — Master Orchestration Prompt
+# /parallel-orchestrate — Master Orchestration Prompt
 
 > Takes a gstack implementation plan and ships it via parallel subagents in isolated worktrees.
 > Sits between `/autoplan` (or `/plan-eng-review`) and `/review` + `/ship`.
@@ -70,12 +70,12 @@ echo "TELEMETRY: ${_TEL:-off}  SESSION: $_SESSION_ID"
 mkdir -p ~/.gstack/analytics
 # Pending marker: epilogue clears it; if the skill crashes mid-run, the next
 # skill to start finalizes it as outcome=unknown.
-echo '{"skill":"gstack-orchestrate","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","session_id":"'"$_SESSION_ID"'","gstack_version":"'$(cat ~/.claude/skills/gstack/VERSION 2>/dev/null | tr -d '[:space:]' || echo unknown)'"}' \
+echo '{"skill":"parallel-orchestrate","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","session_id":"'"$_SESSION_ID"'","gstack_version":"'$(cat ~/.claude/skills/gstack/VERSION 2>/dev/null | tr -d '[:space:]' || echo unknown)'"}' \
   > ~/.gstack/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
 
 # Local analytics start row (gated on telemetry tier)
 if [ "$_TEL" != "off" ]; then
-  echo '{"skill":"gstack-orchestrate","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","repo":"'$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo unknown)'"}' \
+  echo '{"skill":"parallel-orchestrate","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","repo":"'$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo unknown)'"}' \
     >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
 fi
 
@@ -97,7 +97,7 @@ done
 # accepts refs/heads/foo"bar).
 _BRANCH_FOR_TL=$(git branch --show-current 2>/dev/null || echo unknown)
 _TL_PAYLOAD=$(jq -nc --arg branch "$_BRANCH_FOR_TL" --arg sid "$_SESSION_ID" \
-  '{skill:"gstack-orchestrate",event:"started",branch:$branch,session:$sid}')
+  '{skill:"parallel-orchestrate",event:"started",branch:$branch,session:$sid}')
 ~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null &
 
 # Telemetry recovery state: persist the four telemetry vars to a stable path
@@ -315,7 +315,7 @@ Every abort or error gate in this skill (1.1-C, 1.4-D, 3.2-C, 3.4-B, 4.1-B) MUST
    sed -i.bak 's/^export _OUTCOME=.*/export _OUTCOME="abort"/' "$_STATE_DIR/env.sh" && rm -f "$_STATE_DIR/env.sh.bak"
    ```
 2. **Run the Phase 4.4.5 telemetry epilogue.** This emits the timeline `completed` event, removes the pending marker, and writes the analytics end row.
-3. **Leave `$_STATE_DIR` intact** (state.jsonl, TASKS.md, results). Print: `"Aborted. State preserved at <_STATE_DIR>. Re-run /gstack-orchestrate to resume, or 'rm -rf <_STATE_DIR>' to discard."`
+3. **Leave `$_STATE_DIR` intact** (state.jsonl, TASKS.md, results). Print: `"Aborted. State preserved at <_STATE_DIR>. Re-run /parallel-orchestrate to resume, or 'rm -rf <_STATE_DIR>' to discard."`
 
 The success path (Phase 4.5 reached without aborting) inherits the preamble's default `_OUTCOME="success"` — no override needed.
 
@@ -465,7 +465,7 @@ _WAVE_TASK_COUNT=$(cat "$_STATE_DIR/wave-$_WAVE_NUM.tasks" 2>/dev/null || echo 0
 _TL_PAYLOAD=$(jq -nc \
   --arg branch "$_BRANCH" --arg sid "$_SESSION_ID" \
   --argjson wave "$_WAVE_NUM" --argjson tasks "$_WAVE_TASK_COUNT" \
-  '{skill:"gstack-orchestrate",event:"wave_dispatched",branch:$branch,wave:$wave,tasks:$tasks,session:$sid}')
+  '{skill:"parallel-orchestrate",event:"wave_dispatched",branch:$branch,wave:$wave,tasks:$tasks,session:$sid}')
 ~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null &
 ```
 
@@ -753,7 +753,7 @@ if jq -nc \
     --arg branch "$_BRANCH" --arg sid "$_SESSION_ID" \
     --argjson wave "$_WAVE_NUM" --argjson dur "$_WAVE_DUR" \
     --argjson success "$_WAVE_SUCCESS" --argjson failed "$_WAVE_FAILED" --argjson fixups "$_WAVE_FIXUPS" \
-    '{skill:"gstack-orchestrate",event:"wave_completed",branch:$branch,wave:$wave,duration_s:$dur,success:$success,failed:$failed,fixups:$fixups,session:$sid}')
+    '{skill:"parallel-orchestrate",event:"wave_completed",branch:$branch,wave:$wave,duration_s:$dur,success:$success,failed:$failed,fixups:$fixups,session:$sid}')
   ~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null &
 else
   # Checkpoint failed. Tell the user — resume will be broken until disk/perms
@@ -833,18 +833,18 @@ rm -f ~/.gstack/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
 # Timeline: skill completed (local-only). jq-built for safe JSON.
 _TL_BR=$(git branch --show-current 2>/dev/null || echo unknown)
 _TL_PAYLOAD=$(jq -nc --arg branch "$_TL_BR" --arg sid "$_SESSION_ID" --arg outcome "$_OUTCOME" --argjson dur "$_TEL_DUR" \
-  '{skill:"gstack-orchestrate",event:"completed",branch:$branch,outcome:$outcome,duration_s:$dur,session:$sid}')
+  '{skill:"parallel-orchestrate",event:"completed",branch:$branch,outcome:$outcome,duration_s:$dur,session:$sid}')
 ~/.claude/skills/gstack/bin/gstack-timeline-log "$_TL_PAYLOAD" 2>/dev/null || true
 
 # Local analytics end row (gated)
 if [ "$_TEL" != "off" ]; then
-  echo '{"skill":"gstack-orchestrate","duration_s":"'"$_TEL_DUR"'","outcome":"'"$_OUTCOME"'","browse":"false","session":"'"$_SESSION_ID"'","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
+  echo '{"skill":"parallel-orchestrate","duration_s":"'"$_TEL_DUR"'","outcome":"'"$_OUTCOME"'","browse":"false","session":"'"$_SESSION_ID"'","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
 fi
 
 # Remote telemetry (opt-in, requires binary)
 if [ "$_TEL" != "off" ] && [ -x ~/.claude/skills/gstack/bin/gstack-telemetry-log ]; then
   ~/.claude/skills/gstack/bin/gstack-telemetry-log \
-    --skill "gstack-orchestrate" --duration "$_TEL_DUR" --outcome "$_OUTCOME" \
+    --skill "parallel-orchestrate" --duration "$_TEL_DUR" --outcome "$_OUTCOME" \
     --used-browse "false" --session-id "$_SESSION_ID" 2>/dev/null &
 fi
 

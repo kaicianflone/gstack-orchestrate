@@ -1,4 +1,4 @@
-# Implementation Plan: gstack-orchestrate telemetry & timeline integration
+# Implementation Plan: parallel-orchestrate telemetry & timeline integration
 
 **Date:** 2026-05-07
 **Spec:** [`2026-05-07-telemetry-design.md`](./2026-05-07-telemetry-design.md)
@@ -9,10 +9,10 @@
 
 ## Conventions
 
-- **Repo:** `~/.claude/skills/gstack-orchestrate` (independent git repo, currently on `main`)
+- **Repo:** `~/.claude/skills/parallel-orchestrate` (independent git repo, currently on `main`)
 - **Working branch:** `feat/telemetry-hooks`
 - **Files modified:** 2 (`SKILL.md`, `README.md`)
-- **Execution mode:** sequential, direct edits. `/gstack-orchestrate` is incompatible by its own design (<4 parallel tasks → falls under its "use /autoplan instead" rule).
+- **Execution mode:** sequential, direct edits. `/parallel-orchestrate` is incompatible by its own design (<4 parallel tasks → falls under its "use /autoplan instead" rule).
 - **Smoke verification:** manual checklist at the end. No automated tests (sibling-skill convention).
 
 ---
@@ -24,7 +24,7 @@
 **File:** `SKILL.md`
 **Where:** Insert a new `## TELEMETRY PREAMBLE` section between the frontmatter (ends ~line 28) and `## PHASE 0 — PRE-FLIGHT` (starts ~line 54).
 
-**Content:** mirror `/review/SKILL.md:50-86` substituting `gstack-orchestrate` for `review`. Keep these elements:
+**Content:** mirror `/review/SKILL.md:50-86` substituting `parallel-orchestrate` for `review`. Keep these elements:
 - Read `_TEL` from `gstack-config get telemetry`
 - Stamp `_TEL_START=$(date +%s)`
 - Compute `_SESSION_ID="$$-$(date +%s)"`
@@ -68,7 +68,7 @@ Phase 3.5 reads it back.
 
 **Edit:** add a single backgrounded bash line:
 ```bash
-~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"gstack-orchestrate","event":"wave_dispatched","branch":"'"$_BRANCH"'","wave":"'"$_WAVE_NUM"'","tasks":"'"$_WAVE_TASK_COUNT"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
+~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"parallel-orchestrate","event":"wave_dispatched","branch":"'"$_BRANCH"'","wave":"'"$_WAVE_NUM"'","tasks":"'"$_WAVE_TASK_COUNT"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
 ```
 
 `_WAVE_NUM` and `_WAVE_TASK_COUNT` come from the orchestrator's wave-iteration logic.
@@ -96,7 +96,7 @@ jq -nc \
   '{ts:$ts,wave:$wave,head:$head,status:"completed",duration_s:$duration,task_count:$tasks,success:$success,failed:$failed,fixups:$fixups}' \
   >> "$_STATE_DIR/state.jsonl"
 
-~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"gstack-orchestrate","event":"wave_completed","branch":"'"$_BRANCH"'","wave":"'"$_WAVE_NUM"'","duration_s":"'"$_WAVE_DUR"'","success":"'"$_WAVE_SUCCESS_COUNT"'","failed":"'"$_WAVE_FAILED_COUNT"'","fixups":"'"$_WAVE_FIXUP_COUNT"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
+~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"parallel-orchestrate","event":"wave_completed","branch":"'"$_BRANCH"'","wave":"'"$_WAVE_NUM"'","duration_s":"'"$_WAVE_DUR"'","success":"'"$_WAVE_SUCCESS_COUNT"'","failed":"'"$_WAVE_FAILED_COUNT"'","fixups":"'"$_WAVE_FIXUP_COUNT"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
 ```
 
 (The aggregate counts `_WAVE_SUCCESS_COUNT`, `_WAVE_FAILED_COUNT`, `_WAVE_FIXUP_COUNT` already exist conceptually in Phase 3.1's aggregate loop — surface them as variables before reaching 3.5.)
@@ -106,20 +106,20 @@ jq -nc \
 **File:** `SKILL.md`
 **Where:** Insert a new `## TELEMETRY EPILOGUE` section between Phase 4.4 ("Final report", currently ends ~line 624) and Phase 4.5 ("Handoff", currently starts ~line 626).
 
-**Content:** mirror `/review/SKILL.md:700-714` substituting `gstack-orchestrate` for `SKILL_NAME` and reading `$_OUTCOME` instead of hardcoding `OUTCOME`.
+**Content:** mirror `/review/SKILL.md:700-714` substituting `parallel-orchestrate` for `SKILL_NAME` and reading `$_OUTCOME` instead of hardcoding `OUTCOME`.
 
 ```bash
 source "<env.sh>"
 _TEL_END=$(date +%s)
 _TEL_DUR=$(( _TEL_END - _TEL_START ))
 rm -f ~/.gstack/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
-~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"gstack-orchestrate","event":"completed","branch":"'$(git branch --show-current 2>/dev/null || echo unknown)'","outcome":"'"$_OUTCOME"'","duration_s":"'"$_TEL_DUR"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null || true
+~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"parallel-orchestrate","event":"completed","branch":"'$(git branch --show-current 2>/dev/null || echo unknown)'","outcome":"'"$_OUTCOME"'","duration_s":"'"$_TEL_DUR"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null || true
 if [ "$_TEL" != "off" ]; then
-  echo '{"skill":"gstack-orchestrate","duration_s":"'"$_TEL_DUR"'","outcome":"'"$_OUTCOME"'","browse":"false","session":"'"$_SESSION_ID"'","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
+  echo '{"skill":"parallel-orchestrate","duration_s":"'"$_TEL_DUR"'","outcome":"'"$_OUTCOME"'","browse":"false","session":"'"$_SESSION_ID"'","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
 fi
 if [ "$_TEL" != "off" ] && [ -x ~/.claude/skills/gstack/bin/gstack-telemetry-log ]; then
   ~/.claude/skills/gstack/bin/gstack-telemetry-log \
-    --skill "gstack-orchestrate" --duration "$_TEL_DUR" --outcome "$_OUTCOME" \
+    --skill "parallel-orchestrate" --duration "$_TEL_DUR" --outcome "$_OUTCOME" \
     --used-browse "false" --session-id "$_SESSION_ID" 2>/dev/null &
 fi
 ```

@@ -1,4 +1,4 @@
-# gstack-orchestrate
+# parallel-orchestrate
 
 > **Status:** Stable, in regular use. v1.6.
 
@@ -28,7 +28,7 @@ The orchestrator never writes feature code itself. Every line of code, every con
 ## How to use
 
 ```
-/gstack-orchestrate
+/parallel-orchestrate
 ```
 
 Voice triggers also work: "orchestrate the plan", "ship the plan in parallel", "execute the plan in parallel".
@@ -92,6 +92,6 @@ Query with `gstack-analytics` (skill-usage), `gstack-timeline-read` (timeline), 
 
 ## Where to read more
 
-- Full skill definition: `~/.claude/skills/gstack-orchestrate/SKILL.md`
+- Full skill definition: `~/.claude/skills/parallel-orchestrate/SKILL.md`
 - Sibling skills it composes with: `/autoplan`, `/plan-eng-review`, `/review`, `/qa`, `/ship`
 - The Agent tool's `isolation: "worktree"` mode is what makes parallel commits safe

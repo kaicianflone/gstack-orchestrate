@@ -19,6 +19,6 @@
     "note": "Local-first. Telemetry writes to local JSONL files. Optional remote telemetry only fires when gstack-config telemetry tier is community or anonymous, via the existing gstack-telemetry-log binary (opt-in)."
   },
   "trustedExternalSources": [
-    "https://github.com/kaicianflone/gstack-orchestrate"
+    "https://github.com/kaicianflone/parallel-orchestrate"
   ]
 }

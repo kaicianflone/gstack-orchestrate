@@ -1,14 +1,14 @@
-# gstack-orchestrate telemetry & timeline integration
+# parallel-orchestrate telemetry & timeline integration
 
 **Date:** 2026-05-07
-**Skill:** `gstack-orchestrate` (target version: 1.6.0)
+**Skill:** `parallel-orchestrate` (target version: 1.6.0)
 **Status:** approved design, ready for plan
 
 ---
 
 ## Goal
 
-Wire `/gstack-orchestrate` into the existing gstack telemetry/timeline infrastructure so its performance can be tracked alongside `/ship`, `/review`, `/qa`. Update the README to reflect that the skill is now in regular, no-issue use.
+Wire `/parallel-orchestrate` into the existing gstack telemetry/timeline infrastructure so its performance can be tracked alongside `/ship`, `/review`, `/qa`. Update the README to reflect that the skill is now in regular, no-issue use.
 
 ---
 
@@ -18,7 +18,7 @@ The README explicitly flags this as a known gap:
 
 > "**No telemetry/learnings hooks.** Sibling gstack skills (`/ship`, `/review`, `/qa`) log to `~/.gstack/analytics/` and `~/.gstack/projects/$SLUG/learnings.jsonl`. This skill doesn't yet."
 
-The user is now using gstack-orchestrate consistently with no issues. Without telemetry hooks, the orchestrator is invisible to the existing analytics dashboards (`gstack-analytics`), security audits, and timeline read-back tools. Adding the standard preamble/epilogue plus per-wave timeline events brings it to parity with siblings AND yields the most operationally useful signal: which waves are slow and how often fix-ups fire.
+The user is now using parallel-orchestrate consistently with no issues. Without telemetry hooks, the orchestrator is invisible to the existing analytics dashboards (`gstack-analytics`), security audits, and timeline read-back tools. Adding the standard preamble/epilogue plus per-wave timeline events brings it to parity with siblings AND yields the most operationally useful signal: which waves are slow and how often fix-ups fire.
 
 ---
 
